@@ -1,0 +1,103 @@
+```{r}
+library(yarrr)
+library(mice)
+
+train.df <- read.csv("moneyball-training-data.csv", sep = ",", T)
+train <- train.df[, -1]
+```
+
+
+# Handling NA's
+
+```{r}
+# NA's to mean
+for(i in 1:ncol(train)){
+  train[is.na(train[,i]), i] <- mean(train[,i], na.rm = TRUE)
+}
+
+# NA's to 0
+train[is.na(train)] <- 0
+
+# Mice data imputation (predictive mean matching)
+train_imputed <- complete(mice(train,method='pmm',seed=500))
+```
+
+
+```{r}
+for (j in seq(2, 16, 1)){
+
+  # Set plot layout
+  layout(mat = matrix(c(2, 1, 0, 3), 
+                          nrow = 2, 
+                          ncol = 2),
+         heights = c(1, 2),    # Heights of the two rows
+         widths = c(2, 1))     # Widths of the two columns
+  
+  # Plot 1: Scatterplot
+  par(mar = c(5, 4, 0, 0))
+  plot(x = train[,j], 
+       y = train[,1],
+       xlab = colnames(train)[j], 
+       ylab = "GAMES WON", 
+       pch = 16, 
+       col = yarrr::piratepal("pony", trans = .7))
+  
+  # Plot 2: Top (height) boxplot
+  par(mar = c(0, 4, 0, 0))
+  boxplot(train[,j],
+          col = "white", frame = FALSE, horizontal = TRUE)
+  
+  # Plot 3: Right (weight) boxplot
+  par(mar = c(5, 0, 0, 0))
+  boxplot(train[,1],
+          col = "white", frame = F)
+
+}
+
+
+# Code : https://bookdown.org/ndphillips/YaRrr/arranging-plots-with-parmfrow-and-layout.html
+```
+
+
+```{r}
+for (j in seq(2, 16, 1)){
+  
+  train_imputed[,j] <- scale(train_imputed[,j], center=T, scale=T)
+  
+  for (i in seq(1,nrow(train_imputed[,j]), 1)){
+    if (train_imputed[i,j] > 4){
+      train_imputed[i,j] <- 4
+    }
+    if (train_imputed[i,j] < -4){
+      train_imputed[i,j] <- -4
+    }
+  }
+
+  # Set plot layout
+  layout(mat = matrix(c(2, 1, 0, 3), 
+                          nrow = 2, 
+                          ncol = 2),
+         heights = c(1, 2),    # Heights of the two rows
+         widths = c(2, 1))     # Widths of the two columns
+  
+  # Plot 1: Scatterplot
+  par(mar = c(5, 4, 0, 0))
+  plot(x = train_imputed[,j], 
+       y = train_imputed[,1],
+       xlab = colnames(train_imputed)[j], 
+       ylab = "GAMES WON", 
+       pch = 16, 
+       col = yarrr::piratepal("pony", trans = .7))
+  
+  # Plot 2: Top (height) boxplot
+  par(mar = c(0, 4, 0, 0))
+  boxplot(train_imputed[,j],
+          col = "white", frame = FALSE, horizontal = TRUE)
+  
+  # Plot 3: Right (weight) boxplot
+  par(mar = c(5, 0, 0, 0))
+  boxplot(train_imputed[,1],
+          col = "white", frame = F)
+
+}
+```
