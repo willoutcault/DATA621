@@ -1,0 +1,265 @@
+---
+title: "Determining Baseball Wins Using Multiple Regression"
+author: "Group 5"
+date: "September 16th, 2020"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=10, 
+                      fig.height=6,
+                      fig.align = 'center', 
+                      echo = TRUE,
+                      cache = TRUE)
+
+library(tidyverse)
+library(ggplot2)
+library(naniar)
+library(Metrics) 
+library(MASS)
+library(corrplot)
+```
+
+# Creating 80/20 Train/Test Set
+
+```{r}
+moneyball <- read.csv("moneyball-training-data.csv", sep = ",", T)
+moneyball_eval <- read.csv("moneyball-evaluation-data.csv", sep = ",", T)
+
+smp_size <- floor(0.75 * nrow(moneyball))
+
+set.seed(123)
+train_ind <- sample(seq_len(nrow(moneyball)), size = smp_size)
+
+train <- moneyball[train_ind, -1]
+test <- moneyball[-train_ind, -1]
+
+#https://stackoverflow.com/questions/17200114/how-to-split-data-into-training-testing-sets-using-sample-function
+```
+
+# EDA and Data Prep
+
+## Visualizing Raw Data
+
+```{r}
+par(mfrow=c(4,4))
+for (j in seq(2, 16, 1)){
+  # Set plot layout
+  layout(mat = matrix(c(2, 1, 0, 3), 
+                          nrow = 2, 
+                          ncol = 2),
+         heights = c(1, 2),    # Heights of the two rows
+         widths = c(2, 1))     # Widths of the two columns
+  
+  # Plot 1: Scatterplot
+  par(mar = c(5, 4, 0, 0))
+  plot(x = train[,j], 
+       y = train[,1],
+       xlab = colnames(train)[j], 
+       ylab = "GAMES WON", 
+       pch = 16, 
+       col = yarrr::piratepal("pony", trans = .7))
+  
+  # Plot 2: Top (height) boxplot
+  par(mar = c(0, 4, 0, 0))
+  hist(train[,j], xlab = "", ylab = "", main = "")
+  
+  # Plot 3: Right (weight) boxplot
+  par(mar = c(5, 0, 0, 0))
+  boxplot(train[,j],
+        col = "white", frame = FALSE, horizontal = TRUE)
+}
+# Code : https://bookdown.org/ndphillips/YaRrr/arranging-plots-with-parmfrow-and-layout.html
+```
+
+## Exploring NA Patterns
+
+```{r}
+vis_miss(train)
+```
+
+```{r}
+gg_miss_var(train)
+```
+
+We assign values equal to zero to NA because zero values are not feasible for these stats. By converting these patterns to NA we hope to reveal certain patterns.
+
+```{r}
+train[train == 0] <- NA
+vis_miss(train)
+```
+
+We see patterns between a team's batting strike outs and pitching strike outs. We also see a pattern between batting home runs and pitching home runs. The team's stolen bases and fielding errors also seem similar however there are significant differences. We begin by removing the hit by pitches variable and caught stealing variable because over a third of each variable is NA. 
+
+```{r}
+train <- dplyr::select(train, -TEAM_BATTING_HBP, -TEAM_BASERUN_CS)
+vis_miss(train)
+```
+
+These patterns become more evident after removing hit by pitches and players caught stealing.
+
+```{r}
+dim(train)
+```
+
+Due to the precense of these patterns and the context of the data, we filter only complete cases in order to ensure consistent record keeping.
+
+```{r}
+full_set <- train[complete.cases(train),]
+dim(full_set)
+```
+
+```{r}
+paste("We lost ",round(1-((nrow(full_set)/nrow(train))), 2)*100,"% of our data by training only complete cases.", sep = "")
+```
+
+```{r}
+par(mfrow=c(4,4))
+for (j in seq(2, 14, 1)){
+  # Set plot layout
+  layout(mat = matrix(c(2, 1, 0, 3), 
+                          nrow = 2, 
+                          ncol = 2),
+         heights = c(1, 2),    # Heights of the two rows
+         widths = c(2, 1))     # Widths of the two columns
+  
+  # Plot 1: Scatterplot
+  par(mar = c(5, 4, 0, 0))
+  plot(x = full_set[,j], 
+       y = full_set[,1],
+       xlab = colnames(full_set)[j], 
+       ylab = "GAMES WON", 
+       pch = 16, 
+       col = yarrr::piratepal("pony", trans = .7))
+  
+  # Plot 2: Top (height) boxplot
+  par(mar = c(0, 4, 0, 0))
+  hist(full_set[,j], xlab = "", ylab = "", main = "")
+  
+  # Plot 3: Right (weight) boxplot
+  par(mar = c(5, 0, 0, 0))
+  boxplot(full_set[,j],
+          col = "white", frame = F)
+  
+}
+```
+
+
+Our distributions become more normal however there are still significant outliers.
+
+```{r}
+replace_outliers <- function(x){
+  quantiles <- quantile( x, c(.05, .95 ) )
+  x[ x < quantiles[1] ] <- quantiles[1]
+  x[ x > quantiles[2] ] <- quantiles[2]
+  x
+}
+
+remove_outliers <- function(x){
+  outliers <- boxplot(x, plot=FALSE)$out
+  x[which(x %in% outliers)] <- NA
+  x
+}
+
+for (j in seq(2,ncol(full_set),1)){
+  full_set[,j] <- replace_outliers(full_set[,j])
+#  full_set[,j] <- remove_outliers(full_set[,j])
+}
+
+full_set <- full_set[complete.cases(full_set),]
+
+dim(full_set)
+
+#https://stackoverflow.com/questions/13339685/how-to-replace-outliers-with-the-5th-and-95th-percentile-values-in-r
+```
+
+
+```{r}
+par(mfrow=c(4,4))
+for (j in seq(2, 14, 1)){
+  # Set plot layout
+  layout(mat = matrix(c(2, 1, 0, 3), 
+                          nrow = 2, 
+                          ncol = 2),
+         heights = c(1, 2),    # Heights of the two rows
+         widths = c(2, 1))     # Widths of the two columns
+  
+  # Plot 1: Scatterplot
+  par(mar = c(5, 4, 0, 0))
+  plot(x = full_set[,j], 
+       y = full_set[,1],
+       xlab = colnames(full_set)[j], 
+       ylab = "GAMES WON", 
+       pch = 16, 
+       col = yarrr::piratepal("pony", trans = .7))
+  
+  # Plot 2: Top (height) boxplot
+  par(mar = c(0, 4, 0, 0))
+  hist(full_set[,j], xlab = "", ylab = "", main = "")
+  
+  # Plot 3: Right (weight) boxplot
+  par(mar = c(5, 0, 0, 0))
+  boxplot(full_set[,j],
+          col = "white", frame = F)
+  
+}
+```
+
+The distributions are slightly more normal and the boxplots look more consistent.
+
+# Model
+
+```{r}
+fullmodel <- lm(TARGET_WINS ~ TEAM_BATTING_H + TEAM_BATTING_2B + 
+    TEAM_BATTING_3B + TEAM_BATTING_HR + TEAM_BATTING_BB + TEAM_BASERUN_SB + 
+    TEAM_PITCHING_H + TEAM_PITCHING_SO + TEAM_FIELDING_E + TEAM_FIELDING_DP, data = full_set)
+stepmodel <- stepAIC(fullmodel, direction = c("both"), trace = FALSE)
+```
+
+
+# Final Model
+
+```{r}
+plot(stepmodel)
+```
+
+```{r}
+test[is.na(test)] <- 0
+
+predictions <- predict.lm(stepmodel, newdata = test[,-1])
+
+rmse <- rmse(test[,1], predictions)
+
+R.sq <- summary(stepmodel)$adj.r.squared
+
+paste("Our RMSE and Adj R Squared values were ", round(rmse, 2), " and ", round(R.sq, 2), " respectively.", sep="")
+```
+
+
+# Raw Model
+
+```{r}
+test[is.na(test)] <- 0
+
+raw_model <- lm(TARGET_WINS ~ ., data = train)
+
+plot(raw_model)
+```
+
+
+```{r}
+predictions <- predict.lm(raw_model, newdata = test[,-1])
+
+rmse <- rmse(test[,1], predictions)
+
+R.sq <- summary(lm(TARGET_WINS ~ ., data = train))$adj.r.squared
+
+paste("Our RMSE and Adj R Squared values were ", round(rmse, 2), " and ", round(R.sq, 2), " respectively.", sep="")
+```
+
+
+
+
