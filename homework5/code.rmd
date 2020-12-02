@@ -1,1 +1,229 @@
+---
+title: "DATA 621 - Business Analytics and Data Mining"
+subtitle: "Homework #5 Assignment"
+author: "Group 5"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+# Overview
+
+In this homework assignment, you will explore, analyze and model a data set containing information on
+approximately 12,000 commercially available wines. The variables are mostly related to the chemical properties of
+the wine being sold. The response variable is the number of sample cases of wine that were purchased by wine
+distribution companies after sampling a wine. These cases would be used to provide tasting samples to
+restaurants and wine stores around the United States. The more sample cases purchased, the more likely is a
+wine to be sold at a high end restaurant. A large wine manufacturer is studying the data in order to predict the
+number of wine cases ordered based upon the wine characteristics. If the wine manufacturer can predict the
+number of cases, then that manufacturer will be able to adjust their wine offering to maximize sales.
+
+Your objective is to build a count regression model to predict the number of cases of wine that will be sold
+given certain properties of the wine. HINT: Sometimes, the fact that a variable is missing is actually predictive of
+the target. You can only use the variables given to you (or variables that you derive from the variables provided).
+Below is a short description of the variables of interest in the data set:
+
+![](https://github.com/willoutcault/DATA621/blob/master/homework5/hw5_data_description.PNG?raw=true)
+
+```{r include=F}
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(visdat)
+library(MLmetrics)
+library(caret)
+library(missForest)
+library(mice)
+```
+
+# Data Exploration
+
+Exploring 12,000 commercially available wines, specifically the chemical properties of the wine being sold. Dependent variable is the number of sample cases of wine purchased by wine companies after sampling.
+
+Predict the number of cases purchased based on wine properties.
+
+```{r}
+training_data <- read.csv("https://raw.githubusercontent.com/willoutcault/DATA621/master/homework5/wine-training-data.csv",T,",")
+eval_data <- read.csv("https://raw.githubusercontent.com/willoutcault/DATA621/master/homework5/wine-evaluation-data.csv",T,",")
+```
+
+```{r}
+glimpse(training_data)
+```
+
+All numerical data. Target equals dependent variable, index is row index and the rest are independents. 
+
+```{r}
+summary(training_data)
+```
+
+STARS variable has significant amount of missing values. Other variables with missing values include Alcohol, Sulphates, pH, Sulfur Dioxide, Free Sulfur Dioxide, Sugar and Chlorides.
+
+```{r}
+print(colnames(training_data[seq(3,6,1)]))
+```
+
+```{r}
+plots <- function(sequence){
+  
+  print(colnames(training_data[sequence]))
+  
+  par(mfrow = c(2, 2))  # 2 rows and 2 columns
+  
+  #Histogram
+
+  for (j in sequence) {
+    
+      hist(training_data[,j],
+       main = paste(colnames(training_data[j])),
+       xlab = "")
+  
+  }
+
+  par(mfrow = c(2, 2))  # 2 rows and 2 columns
+
+  
+  #Scatter
+  
+  for (j in sequence) {
+    
+      plot(x=training_data[,j], y=training_data$TARGET,
+        main = paste("Target versus ",colnames(training_data[j])),
+        xlab = colnames(training_data[j]),
+        ylab = "Target")
+  
+  }
+}
+```
+
+
+```{r}
+plots(seq(3,6,1))
+```
+
+```{r}
+plots(seq(7,10,1))
+```
+
+```{r}
+plots(seq(11,14,1))
+```
+
+```{r}
+plots(seq(15,16,1))
+```
+
+Histograms: Acid index is skewed right and the rest are unimodal with fairly normal distributions.
+
+Line Plots: No clear correlations with sales except Stars and Label Appeal variables which appear to be positively correlated.
+
+```{r}
+vis_cor(training_data[,-1])
+```
+
+```{r}
+training_data_corr <- cor(training_data[,-1], use = "na.or.complete")
+training_data_high_corr <- findCorrelation(training_data_corr, .9,
+                                            names = TRUE)
+training_data_high_corr
+```
+
+No variables are highly correlated, however, the heatmap above shows that stars and label appeal do have some correlation with sales. In addition, acidity has some negative correlation with sales, and label appeal has some correlation with stars.
+
+```{r}
+training_data_zeroVar <- nearZeroVar(training_data, names = TRUE)
+training_data_zeroVar
+```
+
+```{r}
+vis_miss(training_data[,-1])
+is.na(training_data[,-1])
+```
+
+Create `established` factor variable where wine companies that have both rating and no missing chemical properties are 4, companies with missing chemical properties but have a rating are 3, no rating and no missing chemical properties are 2, and both missing chemical properties and rating are 1.
+
+```{r}
+training_data <- read.csv(
+  "https://raw.githubusercontent.com/willoutcault/DATA621/master/homework5/wine-training-data.csv",T,",")
+
+has_NA <- colnames(training_data[apply(training_data, 2, anyNA)])
+has_NA <- has_NA[-length(has_NA)]
+in_testing <- !complete.cases(training_data[,has_NA])
+in_testing <- ifelse(in_testing==T, 1, 0)
+
+training_data$established <- ifelse(complete.cases(training_data), 4, 3)
+training_data$established <- ifelse(in_testing==T & !is.na(training_data$STARS), 3, training_data$established)
+training_data$established <- ifelse(in_testing==F & is.na(training_data$STARS), 2, training_data$established)
+training_data$established <- ifelse(in_testing==T & is.na(training_data$STARS), 1, training_data$established)
+
+vis_cor(training_data[,-1])
+```
+
+# Data Preparation
+
+## Replace Missing Values
+
+Start by seeding missing values into a complete cases version of the dataset.
+
+```{r}
+training_data_comp <- training_data[complete.cases(training_data), -1]
+
+training_data_mis <- prodNA(training_data_comp, noNA = 0.1)
+
+summary(training_data_mis)
+```
+
+https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+
+# Build Models
+
+## Train/Test
+
+```{r}
+smp_size <- floor(0.75 * nrow(training_data))
+train_ind <- sample(seq_len(nrow(training_data)), size = smp_size)
+train <- training_data[train_ind, ]
+test <- training_data[-train_ind, ]
+```
+
+## Multiple Regression
+
+```{r}
+reg <- lm(TARGET~LabelAppeal+STARS, data=train)
+reg_predictions <- predict(reg, newdata = test[,-2])
+```
+
+# Select Models
+
+```{r err22}
+RMSE <- function(Model, Predictions){
+  Actual <- test[,2]
+  residuals <- Actual - Predictions
+  # Procedure to calculate RMSE.
+  RMSE <- sqrt(mean(residuals^2))
+  y_test_mean = mean(Actual)
+  # Calculate total sum of squares
+  tss =  sum((Actual - y_test_mean)^2 )
+  # Calculate residual sum of squares
+  rss =  sum(residuals^2)
+  # Calculate R-squared
+  rsq  =  1 - (rss/tss)
+  # Rounding
+  RMSE3 <- round(RMSE,4)
+  rsq <- round(rsq,4)
+  #MAPE
+  Y_test3 <- Actual
+  mape3 <- MAPE(Predictions, Y_test3)
+  paste0(Model," R-Squared Value: ", rsq)
+  paste0(Model," RMSE: ", RMSE3)
+  paste0(Model," MAPE: ", mape3)
+}
+```
+
+
+```{r}
+RMSE("Multiple Regression",test[,-2],reg_predictions)
+```
 
