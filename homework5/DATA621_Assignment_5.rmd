@@ -1,0 +1,391 @@
+---
+title: "DATA 621 - Business Analytics and Data Mining"
+subtitle: "Homework #5 Assignment"
+author: "Group 5"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+# Overview
+
+In this homework assignment, you will explore, analyze and model a data set containing information on
+approximately 12,000 commercially available wines. The variables are mostly related to the chemical properties of
+the wine being sold. The response variable is the number of sample cases of wine that were purchased by wine
+distribution companies after sampling a wine. These cases would be used to provide tasting samples to
+restaurants and wine stores around the United States. The more sample cases purchased, the more likely is a
+wine to be sold at a high end restaurant. A large wine manufacturer is studying the data in order to predict the
+number of wine cases ordered based upon the wine characteristics. If the wine manufacturer can predict the
+number of cases, then that manufacturer will be able to adjust their wine offering to maximize sales.
+
+Your objective is to build a count regression model to predict the number of cases of wine that will be sold
+given certain properties of the wine. HINT: Sometimes, the fact that a variable is missing is actually predictive of
+the target. You can only use the variables given to you (or variables that you derive from the variables provided).
+Below is a short description of the variables of interest in the data set:
+
+![](https://github.com/willoutcault/DATA621/blob/master/homework5/hw5_data_description.PNG?raw=true)
+
+```{r include=F}
+library(tidyverse)
+library(fastDummies)
+library(visdat)
+library(MASS)
+library(MLmetrics)
+library(caret)
+library(missForest)
+library(mice)
+```
+
+# Data Exploration
+
+Exploring 12,000 commercially available wines, specifically the chemical properties of the wine being sold. Dependent variable is the number of sample cases of wine purchased by wine companies after sampling.
+
+Predict the number of cases purchased based on wine properties.
+
+```{r}
+training_data <- read.csv("https://raw.githubusercontent.com/willoutcault/DATA621/master/homework5/wine-training-data.csv",T,",")
+eval_data <- read.csv("https://raw.githubusercontent.com/willoutcault/DATA621/master/homework5/wine-evaluation-data.csv",T,",")
+
+training_index <- training_data[,1] 
+training_data <- training_data[,-1]
+eval_index <- eval_data[,1]
+eval_data <- eval_data[,-c(1,2)]
+```
+
+```{r}
+glimpse(training_data)
+```
+
+```{r}
+glimpse(eval_data)
+```
+
+All numerical data. Target is a dependent variable, index is row index and the rest are independents. 
+
+```{r}
+summary(training_data)
+```
+
+```{r}
+summary(eval_data)
+```
+
+STARS variable has significant amount of missing values. Other variables with missing values include Alcohol, Sulphates, pH, Sulfur Dioxide, Free Sulfur Dioxide, Sugar and Chlorides.
+
+```{r}
+plots <- function(sequence){
+  
+  print(colnames(training_data[sequence]))
+  
+  par(mfrow = c(3, 5))  # 3 rows and 5 columns
+  
+  #Histogram
+  for (j in sequence) {
+    
+      hist(training_data[,j],
+       main = paste(colnames(training_data[j])),
+       xlab = "")
+  
+  }
+  par(mfrow = c(3, 5))  # 3 rows and 5 columns
+  
+  #Scatter
+  
+  for (j in sequence) {
+    
+      plot(x=training_data[,j], y=training_data$TARGET,
+        main = paste("Target versus ",colnames(training_data[j])),
+        xlab = colnames(training_data[j]),
+        ylab = "Target")
+  
+  }
+}
+```
+
+```{r}
+plots(seq(2,15,1))
+```
+
+Histograms: Acid index is skewed right and the rest are unimodal with fairly normal distributions.
+
+Line Plots: No clear correlations with sales except Stars and Label Appeal variables which appear to be positively correlated.
+
+```{r}
+vis_cor(training_data)
+```
+
+```{r}
+training_data_corr <- cor(training_data, use = "na.or.complete")
+training_data_high_corr <- findCorrelation(training_data_corr, .9,
+                                            names = TRUE)
+training_data_high_corr
+```
+
+No variables are highly correlated, however, the heatmap above shows that stars and label appeal do have some correlation with sales. In addition, acidity has some negative correlation with sales, and label appeal has some correlation with stars.
+
+```{r}
+vis_miss(training_data)
+```
+
+There are no obvious patterns, however, the missing values besides the star ratings are chemical properties. Perhaps this means this wine manufacturer is not as established. A non-established company could also be the reason for no star ratings.
+
+```{r}
+has_NA <- colnames(training_data[apply(training_data, 2, anyNA)])
+in_testing <- !complete.cases(training_data[,has_NA[-length(has_NA)]])
+in_testing <- ifelse(in_testing==T, 1, 0)
+training_data$established <- ifelse(complete.cases(training_data), 4, 3)
+training_data$established <- ifelse(in_testing==T & !is.na(training_data$STARS), 3, training_data$established)
+training_data$established <- ifelse(in_testing==F & is.na(training_data$STARS), 2, training_data$established)
+training_data$established <- ifelse(in_testing==T & is.na(training_data$STARS), 1, training_data$established)
+
+# Create Variable for Eval Data
+in_testing <- !complete.cases(eval_data[,has_NA[-length(has_NA)]])
+in_testing <- ifelse(in_testing==T, 1, 0)
+eval_data$established <- ifelse(complete.cases(eval_data), 4, 3)
+eval_data$established <- ifelse(in_testing==T & !is.na(eval_data$STARS), 3, eval_data$established)
+eval_data$established <- ifelse(in_testing==F & is.na(eval_data$STARS), 2, eval_data$established)
+eval_data$established <- ifelse(in_testing==T & is.na(eval_data$STARS), 1, eval_data$established)
+
+# Visualize Training Data
+vis_cor(training_data)
+```
+
+We notice the new `established` variable does have a positive correlation with the target variable.
+
+# Data Preparation
+
+## Replace Missing Values
+
+The stars and established variables are treated as factors. The reason for stars being a factor is because the missing values may have significance to the target variable therefor should be treated as it's own value.
+
+```{r}
+training_data$STARS <- as.factor(training_data$STARS)
+eval_data$STARS <- as.factor(eval_data$STARS)
+
+training_data$established <- as.factor(training_data$established)
+eval_data$established <- as.factor(eval_data$established)
+
+temp_train_data <- mice(training_data,m=5,meth="pmm",maxit=10,seed=500,print=F,
+                        defaultMethod = c("pmm", "logreg", "polyreg", "polr"))
+temp_eval_data <- mice(eval_data,m=5,meth="pmm",maxit=10,seed=500,print=F,
+                       defaultMethod = c("pmm", "logreg", "polyreg", "polr"),)
+```
+
+The imputed data is then filled into both the training and eval sets.
+
+```{r}
+clean_train_data <- complete(temp_train_data)
+clean_eval_data <- complete(temp_eval_data)
+```
+
+## Data PreProcessing
+
+Next the data will be scaled and centered. Also the standard deviation and mean of target variable is recorded for later in this report.
+
+```{r}
+# Need to find mu and sigma to revert the preprocess in terms of centered and scaled.
+ph.mu <- mean(clean_train_data$TARGET)
+ph.sigma <- sd(clean_train_data$TARGET)
+# Pre-process function
+trans_train <- preProcess(clean_train_data, method = c("center", "scale"))
+trans_eval <- preProcess(clean_eval_data, method = c("center", "scale"))
+# Procedure to re-calculate new values based on the pre-process
+training_data_transformed <- predict(trans_train, clean_train_data)
+eval_data_transformed <- predict(trans_eval, clean_eval_data)
+
+dim(training_data_transformed)
+dim(eval_data_transformed)
+```
+
+# Build Models
+
+## Train/Test
+
+The data set will be split into training, testing and validation data set.
+
+```{r}
+inTraining <- createDataPartition(training_data_transformed$TARGET, p = 0.80, list=FALSE)
+training <- training_data_transformed[inTraining,]
+testing <- training_data_transformed[-inTraining,]
+X_train <- subset(training, select = -TARGET)
+Y_train <- training$TARGET
+X_test <- subset(testing, select = -TARGET)
+Y_test <- testing$TARGET
+# Defining the train control
+set.seed(123) 
+train.control <- trainControl(method = "cv", number = 10)
+```
+
+The first model will be a Step-Wise Regression.
+
+```{r}
+lm_mod <- lm(TARGET ~ .,
+             data = training,
+             seed = 29)
+step.model <- stepAIC(lm_mod, direction = "both", trace=FALSE)
+```
+
+```{r}
+predicted <- predict(step.model, X_test)
+```
+
+Below is the regression line fit to the predicted data vs observed.
+
+```{r}
+my_data = as.data.frame(cbind(predicted = predicted,
+                            observed = Y_test))
+# Plot predictions vs test data
+ggplot(my_data,aes(predicted, observed)) + geom_point(color = "darkred", alpha = 0.5) + 
+    geom_smooth(method=lm)+ ggtitle('Linear Regression ') + ggtitle("Multiple Linear Regression: Prediction vs Actual (Test Set)") +
+      xlab("Predicted Target") + ylab("Observed Target") + 
+        theme(plot.title = element_text(color="darkgreen",size=16,hjust = 0.5),
+         axis.text.y = element_text(size=12), axis.text.x = element_text(size=12,hjust=.5),
+         axis.title.x = element_text(size=14), axis.title.y = element_text(size=14))
+```
+
+Next we will compute metrics to evaluate this model.
+
+```{r}
+library(MLmetrics)
+# Procedure to calculate RMSE
+residuals <- Y_test - predicted
+RMSE <- sqrt(mean(residuals^2))
+y_test_mean = mean(Y_test)
+# Calculate total sum of squares
+tss =  sum((Y_test - y_test_mean)^2 )
+# Calculate residual sum of squares
+rss =  sum(residuals^2)
+# Calculate R-squared
+rsq  =  1 - (rss/tss)
+# Rounding
+RMSE1 <- round(RMSE,4)
+rsq <- round(rsq,4)
+#MAPE
+Y_test1 <- Y_test
+mape1 <- MAPE(predicted,Y_test1)
+paste0("Step-Wise Regression R-Squard Value: ", rsq)
+paste0("Step-Wise Regression RMSE: ", RMSE1)
+paste0("Step-Wise Regression MAPE: ", mape1)
+```
+
+The next model will be a Random Forest model with three ntrees being tested; 100, 500, 700.
+
+```{r rf}
+# Procedure to find Random Forest Model
+# Function to Calculate RMSE
+RMSE = function(m, o){
+  sqrt(mean((m - o)^2))
+}
+# Random Forest definitions
+ntrees <- c(100,500,700)
+rf_RMSE <- c()
+i <- 1
+for (j in ntrees){
+  rf_model <- randomForest(x = X_train, y = Y_train, ntree = j)
+  predicted <- predict(rf_model, X_test)
+  rf_RMSE[[i]] <- RMSE(predicted, Y_train)
+  i <- i + 1
+}
+rf_df <- data.frame(ntrees, rf_RMSE)
+rf_df
+```
+
+From the above table, we can conclude that our best model will be the one with 700 trees.
+
+```{r rf22}
+# Random Forest selected Model
+rf_model <- randomForest(x = X_train, y = Y_train, ntree = 700)
+```
+
+Once again a visualization of the predicted values.
+
+```{r pred33}
+# Procedure to calculate predicted values.
+predicted <- predict(rf_model, X_test)
+#Visualize 
+my_data = as.data.frame(cbind(predicted = predicted,
+                            observed = Y_test))
+# Plot predictions vs test data
+ggplot(my_data,aes(predicted, observed)) + geom_point(color = "darkred", alpha = 0.5) + 
+    geom_smooth(method=lm)+ ggtitle('Linear Regression ') + ggtitle("Random Forest Ensemble: Prediction vs Actual (Test Set)") +
+      xlab("Predicted Target") + ylab("Observed Target") + 
+        theme(plot.title = element_text(color="darkgreen",size=16,hjust = 0.5),
+         axis.text.y = element_text(size=12), axis.text.x = element_text(size=12,hjust=.5),
+         axis.title.x = element_text(size=14), axis.title.y = element_text(size=14))
+```
+
+The performance metrics for the Random Forest model are as follows.
+
+```{r pred44}
+# Procedure to calculate RMSE
+residuals <- Y_test - predicted
+RMSE <- sqrt(mean(residuals^2))
+y_test_mean = mean(Y_test)
+# Calculate total sum of squares
+tss =  sum((Y_test - y_test_mean)^2 )
+# Calculate residual sum of squares
+rss =  sum(residuals^2)
+# Calculate R-squared
+rsq  =  1 - (rss/tss)
+# Rounding
+RMSE2 <- round(RMSE,4)
+rsq <- round(rsq,4)
+#MAPE
+Y_test2 <- Y_test
+mape2 <- MAPE(predicted, Y_test2)
+paste0("Random Forest R-Squared Value: ", rsq)
+paste0("Random Forest RMSE: ", RMSE2)
+paste0("Random Forest MAPE: ", mape2)
+```
+
+# Select Models
+
+The Random Forest MAPE (assuming 700 trees) is much better than the previous model, the RMSE was somewhat better than the Regression as well.
+
+```{r}
+mlacc <- data.frame(
+model1 = c("Step-Wise Regression", "Random Forest"),
+mapec = c(mape1,mape2),
+rmsec = c(RMSE1,RMSE2)
+)
+colnames(mlacc)<-c("MODEL","MAPE","RMSE")
+mlacc
+```
+
+Now that we have selected the top performing model we have to make our predictions.
+
+```{r finalmod}
+# Final Model Selection.
+final_predicted <- predict(rf_model, eval_data_transformed)
+```
+
+Lastly the predictions have to be retransformed using the mean and standard deviation.
+
+```{r revert}
+# Procedure to revert previous pre-processing of centered and scaled.
+TARGET <- final_predicted * ph.sigma + ph.mu
+# Round to integer
+TARGET <- round(TARGET,0)
+summary(TARGET)
+```
+
+Below is the distribution of our predictions.
+
+```{r revert2}
+# PH Visualization
+hist(TARGET,
+    main = 'Predicted TARGET',
+    xlab = 'TARGET',
+    col = 3)
+```
+
+Now we are ready to write the predictions CSV file.
+
+```{r}
+prediction_data <- cbind(TARGET, eval_data)
+prediction_data <- cbind("Index"=eval_index, prediction_data)
+write.csv(prediction_data, "Prediction_data.csv")
+```
+
